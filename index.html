@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Robo‑Grab</title>
+  <meta name="theme-color" content="#0f1830">
+  <link rel="manifest" href="manifest.webmanifest">
+  <style>
+    :root{ --bg:#0c0f1a; --fg:#e9f1ff; --glass:rgba(255,255,255,0.1); --glass2:rgba(255,255,255,0.16); --accent:#6be6a6; --accent2:#4db6ff; --danger:#ff6b6b; }
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,#0c0f1a,#0f1830);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;overflow:hidden}
+    .wrap{position:fixed;inset:0;display:grid;place-items:center;gap:12px;padding:env(safe-area-inset-top) 12px env(safe-area-inset-bottom)}
+    canvas{width:min(900px,100vw);height:min(620px,72vh);background:linear-gradient(180deg,#15213f 0%,#1c2a54 55%,#223a6e 55%,#223a6e 100%);border-radius:16px;box-shadow:0 20px 50px rgba(0,0,0,.4);display:block;touch-action:none;z-index:1}
+    #hud{position:absolute;top:calc(env(safe-area-inset-top) + 10px);left:12px;right:12px;display:flex;gap:8px;align-items:center;justify-content:space-between;pointer-events:none;z-index:2}
+    .badge{background:var(--glass);border:1px solid var(--glass2);padding:6px 10px;border-radius:999px;pointer-events:auto;font-weight:700;text-shadow:0 2px 6px rgba(0,0,0,.35)}
+    #pauseBtn{pointer-events:auto;display:inline-flex;align-items:center;gap:8px;background:var(--glass);border:1px solid var(--glass2);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);padding:8px 12px;border-radius:12px;font-weight:800;cursor:pointer}
+    #overlay{position:absolute;inset:0;display:grid;place-items:center;background:radial-gradient(1200px 600px at 50% 40%, rgba(9,14,28,.6), rgba(9,14,28,.9));padding:24px;text-align:center;z-index:3}
+    .card{max-width:760px;background:var(--glass);border:1px solid var(--glass2);border-radius:16px;padding:20px;box-shadow:0 8px 30px rgba(0,0,0,.38)}
+    h1{margin:0 0 8px;font-size:clamp(24px,4vw,40px);letter-spacing:.3px}
+    p{opacity:.92;line-height:1.55}
+    .actions{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin-top:14px}
+    .btn{appearance:none;border:0;cursor:pointer;background:linear-gradient(180deg,var(--accent),#45c17d);color:#0c0f1a;font-weight:900;letter-spacing:.4px;padding:12px 18px;border-radius:12px;box-shadow:0 8px 20px rgba(107,230,166,.35)}
+    .btn.alt{background:linear-gradient(180deg,var(--accent2),#1f8ae6);color:white;box-shadow:0 8px 20px rgba(77,182,255,.35)}
+    .btn.danger{background:linear-gradient(180deg,var(--danger),#e44f4f);color:white;box-shadow:0 8px 20px rgba(255,107,107,.35)}
+    .small{font-size:12px;opacity:.8}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="900" height="620" aria-label="Robo-Grab game canvas"></canvas>
+    <div id="hud">
+      <div class="badge" id="score">Caught: 0</div>
+      <div class="badge" id="escaped">Escaped: 0/5</div>
+      <div class="badge" id="best">Best: 0</div>
+      <button id="pauseBtn">⏸ Pause</button>
+    </div>
+    <div id="overlay" style="pointer-events:auto">
+      <div class="card">
+        <h1>Robo‑Grab</h1>
+        <p>
+          Catch the mice <strong>before they reach a mouse hole</strong> and escape. Mice spawn from a <strong>nest</strong> placed randomly each round (not too close to holes). They scurry and jitter like scared mice, sometimes ducking into nearby props to hide.
+          Each level has a <strong>bucket</strong>, a <strong>pair of boots</strong>, and a <strong>cardboard box</strong> placed randomly (not near holes or the nest).
+        </p>
+        <p class="small">Lose when <strong>5 escape</strong>. Best = most caught before losing. Landscape works best on iPad.</p>
+        <div class="actions">
+          <button class="btn" id="playBtn">Play</button>
+          <button class="btn alt" id="howBtn">How to Play</button>
+          <button class="btn danger" id="resetBtn">Reset Best</button>
+        </div>
+        <div id="how" hidden>
+          <p style="margin-top:12px">
+            • <strong>Aim & Fire:</strong> tap/click to shoot the grabber. Tap assist snaps to a nearby mouse.<br>
+            • <strong>Holes:</strong> 1–2 holes per round. Bias toward the hole is mild to keep paths wiggly.<br>
+            • <strong>Nest:</strong> all mice spawn from a single nest each level, away from holes, with jazz-y spawn timing.<br>
+            • <strong>Hiding spots:</strong> bucket, box, boots. Mice may steer toward them when nearby, hide briefly, then pop back out.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // PWA SW registration (works on GitHub Pages HTTPS)
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(console.error);
+  }
+
+  (function(){
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const escapedEl = document.getElementById('escaped');
+    const bestEl = document.getElementById('best');
+    const overlay = document.getElementById('overlay');
+    const playBtn = document.getElementById('playBtn');
+    const howBtn = document.getElementById('howBtn');
+    const how = document.getElementById('how');
+    const resetBtn = document.getElementById('resetBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+
+    const DPR = Math.min(window.devicePixelRatio||1, 2);
+    function fit(){
+      const cssW = Math.min(window.innerWidth, 900);
+      const cssH = Math.min(window.innerHeight*0.72, 620);
+      canvas.style.width = cssW+'px'; canvas.style.height = cssH+'px';
+      canvas.width = Math.round(cssW * DPR); canvas.height = Math.round(cssH * DPR);
+      ctx.setTransform(DPR,0,0,DPR,0,0);
+    }
+    fit();
+    window.addEventListener('resize', fit);
+    window.addEventListener('orientationchange', ()=> setTimeout(fit, 200));
+
+    // World / game state
+    const world = {
+      w: ()=> canvas.width / DPR,
+      h: ()=> canvas.height / DPR,
+      time: 0,
+      spawnAccel: 0,
+      baseSpeed: 65,
+      holeRadius: 16,
+      loseAt: 5,
+      minHoleClear: 140,
+    };
+
+    const robot = { x: ()=> world.w()/2, y: ()=> world.h()/2 + 20, r: 32 };
+
+    // Arm (longer + more forgiving)
+    const arm = { angle:0, len:0, targetLen:0, maxLen:()=> Math.hypot(world.w(),world.h()), state:'idle', speed:1400, cooldown:0.15, cooldownT:0 };
+
+    // Holes (1–2 at random edges)
+    const holes = [];
+    function buildHoles(){
+      const W=world.w(), H=world.h(), r=world.holeRadius;
+      holes.length = 0;
+      const count = Math.random()<0.55 ? 1 : 2;
+      const edges = [0,1,2,3].sort(()=>Math.random()-0.5).slice(0,count);
+      for (const side of edges){
+        if (side===0) holes.push({x: Math.random()*W*0.6 + W*0.2, y: 10, r});
+        if (side===1) holes.push({x: W-10, y: Math.random()*H*0.6 + H*0.2, r});
+        if (side===2) holes.push({x: Math.random()*W*0.6 + W*0.2, y: H-10, r});
+        if (side===3) holes.push({x: 10, y: Math.random()*H*0.6 + H*0.2, r});
+      }
+    }
+
+    // Nest
+    let nest = null;
+    function nearestHoleDist(x,y){ let d=1e9; for(const h of holes){ d=Math.min(d, Math.hypot(x-h.x,y-h.y)); } return d; }
+    function buildNest(){
+      const W=world.w(), H=world.h();
+      let tries=0;
+      do{
+        nest = {x: Math.random()*(W-160)+80, y: Math.random()*(H-160)+80, r:20};
+        tries++;
+      } while (nearestHoleDist(nest.x,nest.y) < world.minHoleClear && tries<200);
+    }
+
+    // Hiding items
+    const items = [];
+    function buildItems(){
+      items.length = 0;
+      const W=world.w(), H=world.h();
+      const specs = [
+        {type:'bucket', w:70, h:60},
+        {type:'box', w:90, h:70},
+        {type:'boots', w:110, h:60},
+      ];
+      for (const s of specs){
+        let placed=null; let tries=0;
+        while(!placed && tries<200){
+          const x = Math.random()*(W-50-s.w-50)+50;
+          const y = Math.random()*(H-50-s.h-50)+50;
+          const rect = {x,y,w:s.w,h:s.h,type:s.type};
+          if (items.some(it=>rectOverlap(rect,it))) { tries++; continue; }
+          let ok = true;
+          for (const h of holes){ if (rectCircleDist(rect, h.x, h.y) < world.minHoleClear) { ok=false; break; } }
+          if (nest && Math.hypot(rect.x+rect.w/2 - nest.x, rect.y+rect.h/2 - nest.y) < 120) ok=false;
+          if (!ok){ tries++; continue; }
+          placed = rect; items.push(rect);
+        }
+      }
+    }
+
+    // Mice
+    const mice = [];
+    function spawnMouse(){
+      const speedScale = 1 + Math.min(world.time*0.05, 2.0);
+      const speed = rand(world.baseSpeed*0.8, world.baseSpeed*1.2) * speedScale;
+      const ang = rand(0, Math.PI*2);
+      const sx = nest.x + rand(-12,12), sy = nest.y + rand(-12,12);
+      mice.push({
+        x:sx, y:sy, r:12,
+        vx:Math.cos(ang)*speed, vy:Math.sin(ang)*speed,
+        hue:(Math.random()<0.5?140:200),
+        age:0, hidden:false, hideT:0,
+        // scurry + hiding control
+        turnT: rand(0.08,0.25),
+        wiggleA: rand(0, Math.PI*2),
+        wiggleB: rand(0, Math.PI*2),
+        seekItemT: 0,
+        seekTarget: null,
+        // per-mouse hiding prefs & cooldowns
+        prefIdx: (items.length? Math.floor(Math.random()*items.length):0),
+        hideRadius: rand(80,130),
+        hiddenIn: null,
+        noHideT: 0
+      });
+    }
+
+    const effects = [];
+
+    // Utilities
+    const rand=(a,b)=> a + Math.random()*(b-a);
+    const expRand=(mean)=> -Math.log(1 - Math.random()) * mean; // exponential gap for jazz rhythm
+    const clamp=(v,min,max)=> Math.max(min, Math.min(max,v));
+    const dist=(ax,ay,bx,by)=> Math.hypot(ax-bx, ay-by);
+    const rectOverlap=(a,b)=> !(a.x+a.w<b.x || b.x+b.w<a.x || a.y+a.h<b.y || b.y+b.h<a.y);
+    const rectCircleDist=(rect, cx,cy)=> { const dx = Math.max(rect.x - cx, 0, cx - (rect.x + rect.w)); const dy = Math.max(rect.y - cy, 0, cy - (rect.y + rect.h)); return Math.hypot(dx,dy); };
+
+    // Score
+    const HI_KEY='robo-grab-best-v9';
+    let best = Number(localStorage.getItem(HI_KEY) || 0);
+    let score = 0; let escaped = 0; let playing = false; let paused = false;
+    bestEl.textContent = `Best: ${best}`; escapedEl.textContent = `Escaped: ${escaped}/${world.loseAt}`;
+
+    let spawnTimer = 0; let last = performance.now();
+
+    function start(){
+      playing=true; paused=false; overlay.style.display='none'; overlay.style.pointerEvents='none';
+      score=0; escaped=0; world.time=0; world.spawnAccel=0; mice.length=0; effects.length=0;
+      buildHoles(); buildNest(); buildItems();
+      arm.state='idle'; arm.len=0; arm.cooldownT=0; spawnTimer=0.7; // quicker start
+      updateHUD(); last = performance.now(); loop();
+    }
+
+    function end(){
+      playing=false; paused=false; overlay.style.display='grid'; overlay.style.pointerEvents='auto';
+      const card = overlay.querySelector('.card');
+      card.querySelector('h1').textContent = 'Game Over';
+      card.querySelector('p').innerHTML = `Caught: <strong>${score}</strong> • Escaped: <strong>${escaped}</strong> • Best: <strong>${best}</strong>`;
+      document.getElementById('playBtn').textContent = 'Play again';
+    }
+
+    function updateHUD(){ scoreEl.textContent = `Caught: ${score}`; escapedEl.textContent = `Escaped: ${escaped}/${world.loseAt}`; bestEl.textContent = `Best: ${best}`; }
+
+    function togglePause(){ if(!playing) return; paused = !paused; pauseBtn.textContent = paused ? '▶ Resume' : '⏸ Pause'; if(!paused){ last=performance.now(); loop(); } draw(); }
+
+    // Input with tap-assist
+    canvas.addEventListener('pointerdown', (e)=>{
+      const rect = canvas.getBoundingClientRect(); const px = (e.clientX - rect.left); const py = (e.clientY - rect.top);
+      if (!playing){ start(); return; } if (paused) return;
+      if (arm.state==='idle'){
+        let targetX = px, targetY = py, closest = null, cd = 1e9;
+        for (const m of mice){ const d = Math.hypot(m.x-px, m.y-py); if (d < cd && d <= 40){ cd=d; closest=m; } }
+        if (closest){ targetX = closest.x; targetY = closest.y; }
+        const bx = robot.x(), by = robot.y(); const dx = targetX - bx, dy = targetY - by; const d = Math.hypot(dx,dy);
+        arm.angle = Math.atan2(dy,dx); arm.targetLen = Math.min(d+8, arm.maxLen()); arm.state='extending';
+      }
+    }, {passive:false});
+
+    window.addEventListener('keydown', (e)=>{
+      if (['Space','ArrowUp'].includes(e.code)){
+        e.preventDefault(); if (!playing){ start(); return; } if (paused) return;
+        if (arm.state==='idle'){
+          const bx=robot.x(), by=robot.y(); const tx = bx, ty = by-200;
+          arm.angle = Math.atan2(ty-by, tx-bx); arm.targetLen = Math.min(200, arm.maxLen()); arm.state='extending';
+        }
+      }
+      if (e.code==='KeyP') togglePause();
+    });
+
+    pauseBtn.addEventListener('click', togglePause);
+    playBtn.addEventListener('click', (e)=>{ e.stopPropagation(); start(); });
+    howBtn.addEventListener('click', ()=>{ how.hidden = !how.hidden; });
+    resetBtn.addEventListener('click', ()=>{ localStorage.removeItem(HI_KEY); best=0; updateHUD(); });
+
+    function loop(){ if (!playing || paused) return; const t = performance.now(); const dt = Math.min(0.032, (t-last)/1000); last = t; update(dt); draw(); requestAnimationFrame(loop); }
+
+    function update(dt){
+      world.time += dt; world.spawnAccel += dt*0.010; // faster ramp
+      const baseInterval = clamp(1.1 - world.spawnAccel, 0.5, 1.4);
+      spawnTimer -= dt; if (spawnTimer<=0){
+        spawnMouse();
+        spawnTimer = expRand(baseInterval); // jazz rhythm
+        if (Math.random()<0.15) { spawnTimer += 0.12; } // small clusters
+      }
+
+      const bx = robot.x(), by = robot.y();
+      const tipX = bx + Math.cos(arm.angle)*arm.len; const tipY = by + Math.sin(arm.angle)*arm.len;
+      if (arm.state==='extending'){ arm.len += arm.speed*dt; if (arm.len>=arm.targetLen){ arm.len=arm.targetLen; arm.state='retracting'; } }
+      else if (arm.state==='retracting'){ arm.len -= arm.speed*1.2*dt; if (arm.len<=0){ arm.len=0; arm.state='cooldown'; arm.cooldownT=arm.cooldown; } }
+      else if (arm.state==='cooldown'){ arm.cooldownT -= dt; if (arm.cooldownT<=0) arm.state='idle'; }
+
+      const W=world.w(), H=world.h();
+      for (let i=mice.length-1; i>=0; i--){
+        const m = mice[i];
+        m.age += dt;
+        if (m.noHideT>0) m.noHideT -= dt;
+        if (m.hidden){
+          m.hideT -= dt;
+          if (m.hideT<=0){
+            m.hidden=false;
+            if (m.hiddenIn){
+              const it = m.hiddenIn;
+              const cx = it.x + it.w/2, cy = it.y + it.h/2;
+              const ang = Math.atan2(m.y - cy, m.x - cx) + rand(-0.6,0.6);
+              const rad = Math.max(it.w, it.h)/2 + m.r + 6;
+              m.x = cx + Math.cos(ang)*rad;
+              m.y = cy + Math.sin(ang)*rad;
+              const spd = Math.max(60, Math.hypot(m.vx,m.vy));
+              m.vx = Math.cos(ang)*spd; m.vy = Math.sin(ang)*spd;
+              m.noHideT = rand(0.6, 1.2);
+              m.hiddenIn = null;
+            }
+          }
+        } else {
+          const hole = nearestHole(m.x,m.y);
+          let dir = Math.atan2(m.vy,m.vx);
+          // sporadic scurry turns
+          m.turnT -= dt; if (m.turnT<=0){ dir += rand(-1.2,1.2); m.turnT = rand(0.08,0.25); }
+          // continuous wiggle (nervous mice)
+          dir += Math.sin((world.time*3)+m.wiggleA)*0.08 + Math.sin((world.time*1.7)+m.wiggleB)*0.06;
+          // opportunistic hiding near props
+          if (m.seekItemT>0 && m.seekTarget){
+            m.seekItemT -= dt; const angTarget = Math.atan2(m.seekTarget.y - m.y, m.seekTarget.x - m.x);
+            dir = lerpAngle(dir, angTarget, 0.6);
+          } else {
+            let nearestItem=null, nd=1e9, nearestCenter=null;
+            for (let idx=0; idx<items.length; idx++){
+              const it = items[idx];
+              const cx=it.x+it.w/2, cy=it.y+it.h/2;
+              const d=dist(m.x,m.y,cx,cy);
+              if (d<nd){ nd=d; nearestItem=it; nearestCenter={x:cx,y:cy}; }
+            }
+            const pref = items.length ? items[m.prefIdx % items.length] : null;
+            const prefCenter = pref ? {x:pref.x+pref.w/2, y:pref.y+pref.h/2} : null;
+            const usePref = !!pref && Math.random()<0.55;
+            const chosen = usePref ? prefCenter : nearestCenter;
+            const trigger = m.hideRadius;
+            if (chosen){
+              const cd = dist(m.x,m.y, chosen.x, chosen.y);
+              const thresh = usePref ? trigger*1.15 : trigger;
+              if (cd < thresh && Math.random() < 0.45){
+                m.seekItemT = rand(0.35,0.9);
+                m.seekTarget = chosen;
+              }
+            }
+            const toHole = Math.atan2(hole.y - m.y, hole.x - m.x);
+            dir = lerpAngle(dir, toHole, clamp(m.age*0.10, 0.05, 0.35)); // milder homing
+          }
+          const spd = Math.hypot(m.vx,m.vy);
+          m.vx = Math.cos(dir)*spd; m.vy = Math.sin(dir)*spd;
+
+          // move & walls
+          m.x += m.vx*dt; m.y += m.vy*dt;
+          if (m.x < 8){ m.x=8; m.vx=Math.abs(m.vx); }
+          if (m.x > W-8){ m.x=W-8; m.vx=-Math.abs(m.vx); }
+          if (m.y < 8){ m.y=8; m.vy=Math.abs(m.vy); }
+          if (m.y > H-8){ m.y=H-8; m.vy=-Math.abs(m.vy); }
+
+          // entering a prop hides them briefly
+          for (const it of items){
+            if (m.noHideT<=0 && pointInRect(m.x,m.y,it)){
+              m.hidden=true; m.hideT=rand(0.8,1.6); m.hiddenIn = it; break;
+            }
+          }
+
+          // escape
+          if (dist(m.x,m.y, hole.x,hole.y) <= world.holeRadius){ mice.splice(i,1); escaped++; updateHUD(); if (escaped>=world.loseAt){ end(); return; } continue; }
+        }
+
+        // capture check
+        if (!m.hidden && (arm.state==='extending'||arm.state==='retracting')){
+          if (segCircleHit(bx,by, tipX,tipY, m.x,m.y, m.r)){
+            mice.splice(i,1); score++; if (score>best){ best=score; localStorage.setItem(HI_KEY,String(best)); }
+            burst(m.x,m.y, m.hue); arm.state='retracting'; updateHUD();
+          }
+        }
+      }
+      if (mice.length>60) mice.length = 60;
+    }
+
+    function draw(){
+      const W=world.w(), H=world.h(); ctx.clearRect(0,0,W,H);
+      // subtle grid
+      ctx.globalAlpha=0.07; for(let x=0;x<W;x+=28){ for(let y=0;y<H;y+=28){ ctx.fillStyle='#fff'; ctx.fillRect(x,y,2,2); } } ctx.globalAlpha=1;
+      // items & holes
+      for(const it of items){ drawItem(it); }
+      for(const h of holes){ drawHole(h); }
+      // nest
+      drawNest(nest);
+      // robot & arm
+      drawRobot(); drawArm();
+      // mice
+      for(const m of mice){ drawMouse(m); }
+      // effects
+      for (let i=effects.length-1;i>=0;i--){ const p=effects[i]; p.life-=0.016; if (p.life<=0){ effects.splice(i,1); continue; } p.x+=p.vx*0.016; p.y+=p.vy*0.016; ctx.globalAlpha=Math.max(p.life,0); ctx.fillStyle=`hsl(${p.hue} 80% 70%)`; ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1; }
+    }
+
+    // Drawing helpers
+    function drawRobot(){ const x=robot.x(), y=robot.y(); ctx.globalAlpha=0.25; ctx.beginPath(); ctx.ellipse(x,y+18,38,12,0,0,Math.PI*2); ctx.fillStyle='#000'; ctx.fill(); ctx.globalAlpha=1; const grd=ctx.createLinearGradient(x-30,y-30,x+30,y+30); grd.addColorStop(0,'#8fb5ff'); grd.addColorStop(1,'#5a7ee0'); ctx.fillStyle=grd; roundRect(ctx,x-32,y-28,64,56,14,true,false); ctx.fillStyle='#0b1225'; roundRect(ctx,x-14,y-10,28,16,8,true,false); ctx.fillStyle='#6be6a6'; ctx.fillRect(x-6,y-6,12,8); ctx.fillStyle='#2a3555'; roundRect(ctx,x-34,y+22,68,14,7,true,false); for(let i=0;i<6;i++){ ctx.fillStyle='#1b2442'; ctx.fillRect(x-30+i*12,y+24,8,10);} }
+
+    function drawArm(){ const bx=robot.x(), by=robot.y(); const tx=bx+Math.cos(arm.angle)*arm.len; const ty=by+Math.sin(arm.angle)*arm.len; ctx.strokeStyle='#bde0ff'; ctx.lineWidth=10; ctx.lineCap='round'; ctx.beginPath(); ctx.moveTo(bx,by-8); ctx.lineTo(tx,ty); ctx.stroke(); ctx.save(); ctx.translate(tx,ty); ctx.rotate(arm.angle); ctx.fillStyle='#e6f0ff'; ctx.beginPath(); ctx.arc(0,0,7,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#ffffff'; roundRect(ctx,6,-10,18,6,3,true,false); roundRect(ctx,6,4,18,6,3,true,false); ctx.restore(); }
+
+    function drawHole(h){ ctx.save(); ctx.translate(h.x,h.y); ctx.fillStyle='#0b0b0b'; ctx.beginPath(); ctx.ellipse(0,0,h.r*1.2,h.r*0.7,0,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=0.2; ctx.fillStyle='#ffffff'; ctx.fillRect(-h.r, h.r*0.3, h.r*2, 3); ctx.globalAlpha=1; ctx.restore(); }
+
+    function drawNest(n){ ctx.save(); ctx.translate(n.x, n.y); ctx.globalAlpha = 0.9; ctx.fillStyle = '#7a5e3a'; ctx.beginPath(); ctx.ellipse(0,0, n.r*1.2, n.r*0.7, 0, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 2; for(let i=0;i<5;i++){ ctx.beginPath(); ctx.ellipse(0,0, n.r*1.2-(i*2), n.r*0.7-(i*1.2), 0, 0, Math.PI*2); ctx.stroke(); } ctx.globalAlpha = 1; ctx.restore(); }
+
+    function drawItem(it){ if(it.type==='bucket') drawBucket(it); else if(it.type==='box') drawBox(it); else if(it.type==='boots') drawBoots(it); }
+    function drawBucket({x,y,w,h}){ ctx.save(); ctx.translate(x,y); const rimH = 12; ctx.fillStyle='#8aa6c9'; roundRect(ctx, 4, rimH, w-8, h-rimH-6, 10, true, false); ctx.fillStyle='#c7d6eb'; roundRect(ctx, 0, 0, w, rimH, 6, true, false); ctx.strokeStyle='#dfe9f7'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(w*0.15, rimH/2); ctx.quadraticCurveTo(w*0.5, -rimH*0.8, w*0.85, rimH/2); ctx.stroke(); ctx.restore(); }
+    function drawBox({x,y,w,h}){ ctx.save(); ctx.translate(x,y); ctx.fillStyle='#c49a6c'; roundRect(ctx, 0, h*0.15, w, h*0.85, 6, true, false); ctx.fillStyle='#d9b387'; roundRect(ctx, 0, 0, w, h*0.22, 6, true, false); ctx.strokeStyle='#7a5a3a'; ctx.lineWidth=2; ctx.strokeRect(0.5,0.5,w-1,h-1); ctx.fillStyle='#e5d2b5'; ctx.fillRect(w*0.35, 4, w*0.3, 8); ctx.restore(); }
+    function drawBoots({x,y,w,h}){ ctx.save(); ctx.translate(x,y); const bootW=w*0.42, bootH=h*0.85; ctx.fillStyle='#6e4f3a'; roundRect(ctx, 6, h-bootH, bootW, bootH-10, 8, true, false); roundRect(ctx, 0, h-18, bootW+18, 18, 6, true, false); ctx.fillStyle='#76563f'; roundRect(ctx, w-bootW-6, h-bootH, bootW, bootH-10, 8, true, false); roundRect(ctx, w-bootW-18, h-18, bootW+18, 18, 6, true, false); ctx.restore(); }
+
+    function drawMouse(m){ ctx.save(); ctx.translate(m.x,m.y); const angle=Math.atan2(m.vy,m.vx); ctx.rotate(angle); const alpha=m.hidden?0.2:1; ctx.globalAlpha=alpha*0.6; ctx.strokeStyle='#ffffff'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(-m.r,0); ctx.quadraticCurveTo(-m.r-8,6,-m.r-16,0); ctx.stroke(); ctx.globalAlpha=alpha; ctx.fillStyle=`hsl(${m.hue} 70% 60%)`; ctx.beginPath(); ctx.ellipse(0,0,m.r+2,m.r,0,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#ffe3e3'; ctx.beginPath(); ctx.arc(4,-m.r+3,3,0,Math.PI*2); ctx.arc(8,-m.r+3,3,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#fff'; ctx.fillRect(m.r-1,-1,3,2); ctx.globalAlpha=1; ctx.restore(); }
+
+    function burst(x,y,hue){ for(let i=0;i<10;i++){ const a=rand(0,Math.PI*2), s=rand(40,160); effects.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:rand(0.25,0.6),hue}); } }
+
+    function roundRect(ctx,x,y,w,h,r,fill,stroke){ if (w<2*r) r=w/2; if (h<2*r) r=h/2; ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); if (fill) ctx.fill(); if (stroke) ctx.stroke(); }
+    function segCircleHit(x1,y1,x2,y2,cx,cy,r){ const dx=x2-x1, dy=y2-y1; const len2=dx*dx+dy*dy; if(len2===0) return Math.hypot(x1-cx,y1-cy)<=r; let t=((cx-x1)*dx+(cy-y1)*dy)/len2; t=clamp(t,0,1); const px=x1+t*dx, py=y1*t+ y1 + t*dy - y1; const rr = r + 12; return ((cx-px)**2+(cy-py)**2) <= rr*rr; }
+    function pointInRect(px,py,rect){ return px>=rect.x && px<=rect.x+rect.w && py>=rect.y && py<=rect.y+rect.h; }
+    function nearestHole(x,y){ let best=null, bd=1e9; for (const h of holes){ const d=dist(x,y,h.x,h.y); if (d<bd){ bd=d; best=h; } } return best; }
+    function wrapAngle(a){ while(a>Math.PI) a-=Math.PI*2; while(a<-Math.PI) a+=Math.PI*2; return a; }
+    function lerpAngle(a,b,t){ const da = wrapAngle(b - a); return a + da * t; }
+
+    overlay.style.display='grid';
+  })();
+  </script>
+</body>
+</html>
