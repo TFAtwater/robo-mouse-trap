@@ -1,5 +1,5 @@
 // GitHub Pages offline service worker for Robo‑Grab
-const CACHE = 'robograb-ghp-v1';
+const CACHE = 'robograb-ghp-v2';
 const ASSETS = ['./','./index.html','./manifest.webmanifest','./sw.js'];
 
 self.addEventListener('install', (e) => {
